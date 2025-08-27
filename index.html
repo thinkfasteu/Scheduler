@@ -779,21 +779,25 @@ const APP_CONFIG = {
   HOUR_CONSERVATION_ENABLED: true,
   HOUR_CONSERVATION_THRESHOLD: 1.5, // Hours per remaining day threshold for conservation
 
-  // Student fairness settings
-  STUDENT_FAIRNESS_ENABLED: true,
-  STUDENT_TYPICAL_DAYS_PENALTY: 200, // Base penalty for exceeding typical workdays
-  STUDENT_EXTRA_DAY_PENALTY: 100, // Additional penalty per extra day worked
-  STUDENT_FAIRNESS_OVERRIDE_THRESHOLD: 0.5, // Allow override if monthly target <50% achieved
+  // Fairness settings
+  FAIRNESS_ENABLED: true,
+  STUDENT_MAX_EXTRA_DAYS_PER_WEEK: 1,
+  TYPICAL_DAYS_PENALTY: 200, // Base penalty for exceeding typical workdays
+  EXTRA_DAY_PENALTY: 100, // Additional penalty per extra day worked
+  FAIRNESS_OVERRIDE_THRESHOLD: 0.5, // Allow override if monthly target <50% achieved
+  MAX_EXTRA_DAYS_ALLOWED: 1,
+  MAX_EXTRA_DAYS_HARD_CAP: 2,
+  SECOND_EXTRA_DAY_SHIFT_KEY: 'evening',
 
   // Student weekday daytime limits (during term)
   STUDENT_WEEKDAY_DAYTIME_ENABLED: true,
-  STUDENT_MAX_WEEKDAY_DAYTIME_SHIFTS: 2, // Max early/midday shifts per week during term
+  STUDENT_MAX_WEEKDAY_DAYTIME_SHIFTS: 1, // Max early/midday shifts per week during term
   STUDENT_WEEKDAY_DAYTIME_PENALTY: 300, // Heavy penalty for exceeding weekday daytime limit
 
   // Student strategic preferences (configurable weights)
   STUDENT_WEEKEND_BONUS: 60, // Bonus for weekend shifts
-  STUDENT_EVENING_BONUS: 40, // Bonus for evening shifts
-  STUDENT_WEEKDAY_DAYTIME_PENALTY_PREF: -25, // Preference penalty for weekday daytime
+  STUDENT_EVENING_BONUS: 80, // Bonus for evening shifts
+  STUDENT_WEEKDAY_DAYTIME_PENALTY_PREF: -50, // Preference penalty for weekday daytime
 
   // Student exception tracking
   STUDENT_MAX_EXCEPTION_WEEKS_PER_TERM: 2, // Max automatic >20h exception weeks per term
@@ -3163,6 +3167,21 @@ const generateSchedule = async () => {
 
     if (scheduledToday?.has?.(staff.id)) return { ok:false };
     if ((consecutiveDaysWorked[staff.id] || 0) >= APP_CONFIG.MAX_CONSECUTIVE_DAYS) return { ok:false };
+    if ((staff.type === 'student' || staff.type === 'minijob') && APP_CONFIG.FAIRNESS_ENABLED && staff.typicalWorkdays > 0 && !isManualAssignment) {
+      const currentDays = daysWorkedThisWeek[staff.id] || 0;
+      const typical = staff.typicalWorkdays;
+      
+      if (currentDays >= typical + APP_CONFIG.MAX_EXTRA_DAYS_HARD_CAP) {
+        return { ok: false};
+      }
+      
+      if (currentDays >= typical + APP_CONFIG.MAX_EXTRA_DAYS_ALLOWED) {
+        if (shiftKey !== APP_CONFIG.SECOND_EXTRA_DAY_SHIFT_KEY) {
+          return { ok: false };
+        }
+      }
+    }
+    
     if (isStaffOnVacation(staff, dateStr)) return { ok:false };
     if (isStaffSick(staff, dateStr)) return { ok:false };
     const lastEnd = lastShiftEndTimes[staff.id];
@@ -3205,25 +3224,39 @@ const generateSchedule = async () => {
       if (av === 'prefer') score += 120;
     }
 
+    if (staff.type === 'student') {
+        const termInfo = getAcademicTermInfo(dateStr);
+        if (termInfo.isInTerm) {
+            if (isWeekendShift(dateStr, shiftKey)) {
+                score += APP_CONFIG.STUDENT_WEEKEND_BONUS;
+            } else if (shiftKey === 'evening' || shiftKey === 'closing') {
+                score += APP_CONFIG.STUDENT_EVENING_BONUS;
+            } else if (isWeekdayDaytimeShift(dateStr, shiftKey)) {
+                score += APP_CONFIG.STUDENT_WEEKDAY_DAYTIME_PENALTY_PREF;
+            }
+        }
+    }
+
     if (staff.typicalWorkdays > 0) {
         const currentDays = daysWorkedThisWeek[staff.id] || 0;
-        if (staff.type === 'student' && APP_CONFIG.STUDENT_FAIRNESS_ENABLED) {
+        if ((staff.type === 'student' || staff.type === 'minijob') && APP_CONFIG.FAIRNESS_ENABLED) {
             if (currentDays >= staff.typicalWorkdays) {
                 const monthlyProgress = mt > 0 ? (mh / mt) : 1;
-                const allowOverride = monthlyProgress < APP_CONFIG.STUDENT_FAIRNESS_OVERRIDE_THRESHOLD;
-                if (!allowOverride) {
-                    const basePenalty = APP_CONFIG.STUDENT_TYPICAL_DAYS_PENALTY;
-                    const extraDays = currentDays - staff.typicalWorkdays;
-                    const extraPenalty = extraDays * APP_CONFIG.STUDENT_EXTRA_DAY_PENALTY;
-                    score -= (basePenalty + extraPenalty);
+                const allowsoftening = monthlyProgress < APP_CONFIG.FAIRNESS_OVERRIDE_THRESHOLD;
+                if (allowsoftening) {
+                  score -= 50;
                 } else {
-                    score -= 50;
+                  const basePenalty = APP_CONFIG.TYPICAL_DAYS_PENALTY;
+                  const extraDays = currentDays - staff.typicalWorkdays;
+                  const extraPenalty = extraDays * APP_CONFIG.EXTRA_DAY_PENALTY;
+                  score -= (basePenalty + extraPenalty);
                 }
-            } else {
+              } else {
                 score += 25;
+              }
             }
-        } else {
-            if (currentDays < staff.typicalWorkdays) {
+            else {
+              if (currentDays < staff.typicalWorkdays) {
                 score += 15;
             } else if (currentDays >= staff.typicalWorkdays) {
                 score -= 20;
@@ -3340,17 +3373,9 @@ const generateSchedule = async () => {
         if (isHoliday) return t === 'holiday';
         return (isWeekend && t === 'weekend') || (!isWeekend && t === 'weekday');
       })
-      .sort((a,b)=>SHIFTS[a].time.localeCompare(SHIFTS[b].time));
-
-    if (!isWeekend && !isHoliday) {
-      if (Math.random() < 0.5) {
-        const iEarly  = shiftsForDay.indexOf('early');
-        const iMidday = shiftsForDay.indexOf('midday');
-        if (iEarly !== -1 && iMidday !== -1) {
-          [shiftsForDay[iEarly], shiftsForDay[iMidday]] = [shiftsForDay[iMidday], shiftsForDay[iEarly]];
-        }
-      }
-    }
+      .sort((a, b) => {
+        return SHIFTS[a].time.localeCompare(SHIFTS[b].time);
+      });
 
     const scheduledToday = new Set();
     monthSchedule[dateStr] = { assignments: {}, holidayName: isHoliday ? holidays[year][dateStr] : null };
@@ -3390,15 +3415,27 @@ const generateSchedule = async () => {
 
       let chosenCandidate = candidates[0];
       const isEveningShift = shiftKey === 'evening' || shiftKey === 'closing';
-      if (isEveningShift && candidates.length > 0) {
-          // ... your evening shift priority logic ...
+      if (isEveningShift && candidates.length > 1) {
+          const nonPermanentCandidates = candidates.filter(c => c.staff.type !== 'permanent');
+          if (nonPermanentCandidates.length > 0) {
+              // Prioritize non-permanent staff for evening shifts
+              chosenCandidate = nonPermanentCandidates[0];
+              logAction(`Priorisierte Nicht-Festangestellte für Abendschicht: ${formatDateDE(dateStr)} (${SHIFTS[shiftKey].name})`);
+          } else {
+              // Only use permanent staff if no one else is available
+              chosenCandidate = candidates[0];
+              logAction(`Notfall-Zuweisung (Festangestellt): ${formatDateDE(dateStr)} (${SHIFTS[shiftKey].name})`);
+          }
       }
 
-      if (!chosenCandidate) {
-        if (isOptionalEvening(date, shiftKey)) return;
-        // ... your unfillable shift logic
+  if (!chosenCandidate) {
+    if (isOptionalEvening(date, shiftKey)) {
+        logAction(`Optionale Abendschicht übersprungen (keine Kandidaten): ${formatDateDE(dateStr)}`);
         return;
-      }
+    }
+    logAction(`Unbesetzbare Schicht: ${formatDateDE(dateStr)} (${SHIFTS[shiftKey].name}) - Keine Kandidaten gefunden.`);
+    return; // Continue to the next shift in shiftsForDay.forEach
+  }
 
       const chosen = chosenCandidate.staff;
       monthSchedule[dateStr].assignments[shiftKey] = chosen.id;
@@ -4712,7 +4749,7 @@ const toggleStudentTempException = () => {
 
 const toggleStudentFairness = () => {
   const on = document.getElementById('studentFairnessToggle').checked;
-  APP_CONFIG.STUDENT_FAIRNESS_ENABLED = on;
+  APP_CONFIG.FAIRNESS_ENABLED = on;
   saveData();
   logAction(`Werkstudent Fairness-Modus: ${on ? 'aktiv' : 'inaktiv'} (gewünschte Arbeitstage werden ${on ? 'respektiert' : 'ignoriert'}).`);
 

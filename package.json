@@ -1,0 +1,12 @@
+{
+  "name": "ftg-tools",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "node js/test/scheduler.test.js",
+    "start": "npx http-server -c-1"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}

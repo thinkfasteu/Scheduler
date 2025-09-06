@@ -1,0 +1,24 @@
+# dependencies
+node_modules/
+
+# builds / caches
+dist/
+build/
+.out/
+.next/
+.cache/
+coverage/
+.tmp/
+.eslintcache
+.parcel-cache/
+
+# env & local config
+.env
+.env.*
+.npmrc
+.DS_Store
+Thumbs.db
+
+# editors
+.vscode/
+.idea/

@@ -1,18 +1,33 @@
 [build]
-  base = "js"          # ← Netlify runs from here
-  command = "node tools/build.mjs"   # ← path is now relative to js/
-  publish = "."        # ← serve the js/ folder itself (because index.html is here)
+  base = "js"
+  command = "node tools/build.mjs"
+  publish = "."
 
+# Strong caching for hashed bundles (JS/CSS/assets) under /dist
+[[headers]]
+  for = "/dist/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Short cache for the env bridge so changes propagate quickly
 [[headers]]
   for = "/dist/runtime-config.js"
   [headers.values]
     Cache-Control = "public, max-age=60, must-revalidate"
 
+# Keep index.html fresh
 [[headers]]
   for = "/index.html"
   [headers.values]
     Cache-Control = "public, max-age=60"
 
+# Serve real files from /dist/* (avoid SPA rewrite)
+[[redirects]]
+  from = "/dist/*"
+  to = "/dist/:splat"
+  status = 200
+
+# SPA fallback for everything else
 [[redirects]]
   from = "/*"
   to = "/index.html"
